@@ -172,6 +172,7 @@ def main(
 @app.command()
 def onboard():
     """Initialize nanobot configuration and workspace."""
+    from nanobot.agent.memory import MemoryStore
     from nanobot.config.loader import get_config_path, load_config, save_config
     from nanobot.config.schema import Config
 
@@ -206,7 +207,8 @@ def onboard():
         workspace.mkdir(parents=True, exist_ok=True)
         console.print(f"[green]✓[/green] Created workspace at {workspace}")
 
-    sync_workspace_templates(workspace)
+    memory = MemoryStore(workspace)
+    sync_workspace_templates(workspace, memory=memory)
 
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
@@ -337,7 +339,8 @@ def gateway(
     config = _load_runtime_config(config, workspace)
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
-    sync_workspace_templates(config.workspace_path)
+    memory = LongShortTermMemory(config.workspace_path)
+    sync_workspace_templates(config.workspace_path, memory=memory)
     bus = MessageBus()
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
@@ -345,7 +348,6 @@ def gateway(
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_cron_dir() / "jobs.json"
     cron = CronService(cron_store_path)
-    memory = LongShortTermMemory(config.workspace_path)
 
     # Create agent with cron service
     agent = AgentLoop(
@@ -537,7 +539,8 @@ def agent(
     from nanobot.cron.service import CronService
 
     config = _load_runtime_config(config, workspace)
-    sync_workspace_templates(config.workspace_path)
+    memory = LongShortTermMemory(config.workspace_path)
+    sync_workspace_templates(config.workspace_path, memory=memory)
 
     bus = MessageBus()
     provider = _make_provider(config)
@@ -545,7 +548,6 @@ def agent(
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_store_path = get_cron_dir() / "jobs.json"
     cron = CronService(cron_store_path)
-    memory = LongShortTermMemory(config.workspace_path)
 
     if logs:
         logger.enable("nanobot")

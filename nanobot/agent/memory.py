@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 from pathlib import Path
-from typing import TYPE_CHECKING
+from textwrap import dedent
+from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
 
 from loguru import logger
@@ -90,11 +90,140 @@ _SHORT_TERM_GROUPS_RESPONSE_FORMAT = {
 
 _MIN_GROUP_REFERENCES = 4
 
+_DEFAULT_MEMORYSTORE_MEMORY = """
+# Long-term Memory
+
+This file stores important information that should persist across sessions.
+
+## User Information
+
+(Important facts about the user)
+
+## Preferences
+
+(User preferences learned over time)
+
+## Project Context
+
+(Information about ongoing projects)
+
+## Important Notes
+
+(Things to remember)
+
+---
+
+*This file is automatically updated by nanobot when important information should be remembered.*
+"""
+
+_DEFAULT_LONG_TERM_MEMORY = """
+# Long-term Memory
+
+This file stores strengthened reusable knowledge consolidated from repeated experiences.
+
+- Durable user preferences
+- Stable project context
+- Repeatedly validated working knowledge
+
+---
+
+*This file is updated by nanobot when repeated short-term experiences are promoted into long-term memory.*
+"""
+
+_EMPTY_MEMORY_FILE = """
+"""
+
+_DEFAULT_MEMORYSTORE_SKILL = """
+---
+name: memory
+description: Two-layer memory system with grep-based recall.
+always: true
+---
+
+# Memory
+
+## Structure
+
+- `memory/MEMORY.md` — Long-term facts (preferences, project context, relationships). Always loaded into your context.
+- `memory/HISTORY.md` — Append-only event log. NOT loaded into context. Search it with grep-style tools or in-memory filters. Each entry starts with [YYYY-MM-DD HH:MM].
+
+## Search Past Events
+
+Choose the search method based on file size:
+
+- Small `memory/HISTORY.md`: use `read_file`, then search in-memory
+- Large or long-lived `memory/HISTORY.md`: use the `exec` tool for targeted search
+
+Prefer targeted command-line search for large history files.
+
+## When to Update MEMORY.md
+
+Write important facts immediately using `edit_file` or `write_file`:
+- User preferences ("I prefer dark mode")
+- Project context ("The API uses OAuth2")
+- Relationships ("Alice is the project lead")
+
+## Auto-consolidation
+
+Old conversations are automatically summarized and appended to HISTORY.md when the session grows large. Long-term facts are extracted to MEMORY.md. You don't need to manage this.
+"""
+
+_DEFAULT_LONG_SHORT_TERM_SKILL = """
+---
+name: memory
+description: Long/short-term memory with repetition-based consolidation.
+always: true
+---
+
+# Memory
+
+## Structure
+
+- `memory/LONG_TERM_MEMORY.md` — Strengthened reusable knowledge. Always loaded into your context.
+- `memory/SHORT_TERM_MEMORY.md` — Recent structured experiences waiting for repetition-based consolidation. Usually maintained automatically.
+- `memory/HISTORY.md` — Append-only event log. NOT loaded into context. Search it with grep-style tools or in-memory filters. Each entry starts with [YYYY-MM-DD HH:MM].
+
+## How to Use It
+
+- Write durable facts and reusable guidance to `memory/LONG_TERM_MEMORY.md`.
+- Avoid manually dumping raw transcripts into `memory/SHORT_TERM_MEMORY.md`; this file is primarily maintained by the consolidation pipeline.
+- Search `memory/HISTORY.md` when you need older event details.
+
+## Search Past Events
+
+Choose the search method based on file size:
+
+- Small `memory/HISTORY.md`: use `read_file`, then search in-memory
+- Large or long-lived `memory/HISTORY.md`: use the `exec` tool for targeted search
+
+## Auto-consolidation
+
+Older conversations are first serialized into `memory/SHORT_TERM_MEMORY.md`. When repeated scenes accumulate, strengthened groups are appended to `memory/LONG_TERM_MEMORY.md`, and promoted short-term entries are removed from `memory/SHORT_TERM_MEMORY.md`.
+"""
+
+
+def _render_default_content(content: str) -> str:
+    normalized = dedent(content).lstrip("\n")
+    if not normalized:
+        return ""
+    return normalized.rstrip() + "\n"
+
+
+def _write_default_file(
+    workspace: Path, destination: Path, content: str, added: list[str]
+) -> None:
+    if destination.exists():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(_render_default_content(content), encoding="utf-8")
+    added.append(str(destination.relative_to(workspace)))
+
 
 class MemoryStore:
     """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
 
     def __init__(self, workspace: Path):
+        self.workspace = workspace
         self.memory_dir = ensure_dir(workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
@@ -122,6 +251,26 @@ class MemoryStore:
             f"- History log: {workspace_path}/memory/HISTORY.md "
             "(grep-searchable legacy log). Each entry starts with [YYYY-MM-DD HH:MM]."
         )
+
+    def initialize_memory_files(self) -> list[str]:
+        added: list[str] = []
+        _write_default_file(
+            self.workspace, self.memory_file, _DEFAULT_MEMORYSTORE_MEMORY, added
+        )
+        _write_default_file(
+            self.workspace, self.history_file, _EMPTY_MEMORY_FILE, added
+        )
+        return added
+
+    def initialize_memory_skill(self) -> list[str]:
+        added: list[str] = []
+        _write_default_file(
+            self.workspace,
+            self.workspace / "skills" / "memory" / "SKILL.md",
+            _DEFAULT_MEMORYSTORE_SKILL,
+            added,
+        )
+        return added
 
     async def consolidate(
         self,
@@ -244,6 +393,7 @@ class LongShortTermMemory:
     """Long/short-term memory store with repetition-based strengthening."""
 
     def __init__(self, workspace: Path):
+        self.workspace = workspace
         self.memory_dir = ensure_dir(workspace / "memory")
         self.history_file = self.memory_dir / "HISTORY.md"
         self.long_term_memory_file = self.memory_dir / "LONG_TERM_MEMORY.md"
@@ -263,6 +413,35 @@ class LongShortTermMemory:
             f"- History log: {workspace_path}/memory/HISTORY.md "
             "(grep-searchable legacy log). Each entry starts with [YYYY-MM-DD HH:MM]."
         )
+
+    def initialize_memory_files(self) -> list[str]:
+        added: list[str] = []
+        _write_default_file(
+            self.workspace,
+            self.long_term_memory_file,
+            _DEFAULT_LONG_TERM_MEMORY,
+            added,
+        )
+        _write_default_file(
+            self.workspace,
+            self.short_term_memory_file,
+            _EMPTY_MEMORY_FILE,
+            added,
+        )
+        _write_default_file(
+            self.workspace, self.history_file, _EMPTY_MEMORY_FILE, added
+        )
+        return added
+
+    def initialize_memory_skill(self) -> list[str]:
+        added: list[str] = []
+        _write_default_file(
+            self.workspace,
+            self.workspace / "skills" / "memory" / "SKILL.md",
+            _DEFAULT_LONG_SHORT_TERM_SKILL,
+            added,
+        )
+        return added
 
     def read(self, file: Path) -> str:
         if file.exists():

@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Two-layer memory system with grep-based recall.
+description: Workspace memory files for durable knowledge and searchable history.
 always: true
 ---
 
@@ -8,30 +8,31 @@ always: true
 
 ## Structure
 
-- `memory/MEMORY.md` — Long-term facts (preferences, project context, relationships). Always loaded into your context.
-- `memory/HISTORY.md` — Append-only event log. NOT loaded into context. Search it with grep-style tools or in-memory filters. Each entry starts with [YYYY-MM-DD HH:MM].
+Follow the memory file locations listed in the system prompt for the current workspace.
+
+Depending on the active memory implementation, the workspace may contain:
+
+- Long-term memory files that are loaded into context
+- Short-term memory files used for staged consolidation
+- History logs that are searchable but not automatically loaded into context
 
 ## Search Past Events
 
-Choose the search method based on file size:
+Choose the search method based on file size and the history file used by the workspace:
 
-- Small `memory/HISTORY.md`: use `read_file`, then search in-memory
-- Large or long-lived `memory/HISTORY.md`: use the `exec` tool for targeted search
+- Small history files: use `read_file`, then search in-memory
+- Large or long-lived history files: use the `exec` tool for targeted search
 
-Examples:
-- **Linux/macOS:** `grep -i "keyword" memory/HISTORY.md`
-- **Windows:** `findstr /i "keyword" memory\HISTORY.md`
-- **Cross-platform Python:** `python -c "from pathlib import Path; text = Path('memory/HISTORY.md').read_text(encoding='utf-8'); print('\n'.join([l for l in text.splitlines() if 'keyword' in l.lower()][-20:]))"`
+Use the specific history file path from the system prompt when constructing commands.
 
 Prefer targeted command-line search for large history files.
 
-## When to Update MEMORY.md
+## How to Use Memory Files
 
-Write important facts immediately using `edit_file` or `write_file`:
-- User preferences ("I prefer dark mode")
-- Project context ("The API uses OAuth2")
-- Relationships ("Alice is the project lead")
+- Write stable, reusable knowledge only to long-term memory files.
+- Treat history files as searchable archives for prior events and decisions.
+- If the workspace has a short-term memory file, it is usually maintained automatically by the consolidation pipeline unless the user explicitly asks you to edit it.
 
 ## Auto-consolidation
 
-Old conversations are automatically summarized and appended to HISTORY.md when the session grows large. Long-term facts are extracted to MEMORY.md. You don't need to manage this.
+Older conversations may be consolidated into the workspace memory files automatically. Use the concrete file locations exposed in the system prompt for the active memory implementation.

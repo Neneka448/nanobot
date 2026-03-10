@@ -11,6 +11,12 @@ class MemoryProtocol(Protocol):
     def get_memory_locations(self, workspace_path: str) -> str:
         pass
 
+    def initialize_memory_files(self) -> list[str]:
+        pass
+
+    def initialize_memory_skill(self) -> list[str]:
+        pass
+
     async def consolidate(
         self,
         session: Session,

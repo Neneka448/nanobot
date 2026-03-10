@@ -60,6 +60,9 @@ def test_onboard_fresh_install(mock_paths):
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
     assert (workspace_dir / "memory" / "MEMORY.md").exists()
+    assert (workspace_dir / "memory" / "HISTORY.md").exists()
+    assert (workspace_dir / "skills" / "memory" / "SKILL.md").exists()
+    assert not (workspace_dir / "memory" / "LONG_TERM_MEMORY.md").exists()
 
 
 def test_onboard_existing_config_refresh(mock_paths):
@@ -101,6 +104,8 @@ def test_onboard_existing_workspace_safe_create(mock_paths):
     assert "Created workspace" not in result.stdout
     assert "Created AGENTS.md" in result.stdout
     assert (workspace_dir / "AGENTS.md").exists()
+    assert (workspace_dir / "memory" / "MEMORY.md").exists()
+    assert (workspace_dir / "skills" / "memory" / "SKILL.md").exists()
 
 
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():
@@ -193,12 +198,13 @@ def test_agent_uses_default_config_when_no_workspace_or_config_flags(
     assert mock_agent_runtime["sync_templates"].call_args.args == (
         mock_agent_runtime["config"].workspace_path,
     )
+    sync_memory = mock_agent_runtime["sync_templates"].call_args.kwargs["memory"]
     assert mock_agent_runtime["agent_loop_cls"].call_args.kwargs["workspace"] == (
         mock_agent_runtime["config"].workspace_path
     )
-    assert isinstance(
-        mock_agent_runtime["agent_loop_cls"].call_args.kwargs["memory"],
-        LongShortTermMemory,
+    assert isinstance(sync_memory, LongShortTermMemory)
+    assert (
+        mock_agent_runtime["agent_loop_cls"].call_args.kwargs["memory"] is sync_memory
     )
     mock_agent_runtime["agent_loop"].process_direct.assert_awaited_once()
     mock_agent_runtime["print_response"].assert_called_once_with(
@@ -233,7 +239,8 @@ def test_agent_config_sets_active_path(monkeypatch, tmp_path: Path) -> None:
         "nanobot.config.paths.get_cron_dir", lambda: config_file.parent / "cron"
     )
     monkeypatch.setattr(
-        "nanobot.cli.commands.sync_workspace_templates", lambda _path: None
+        "nanobot.cli.commands.sync_workspace_templates",
+        lambda _path, memory: None,
     )
     monkeypatch.setattr("nanobot.cli.commands._make_provider", lambda _config: object())
     monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: object())
@@ -268,6 +275,10 @@ def test_agent_overrides_workspace_path(mock_agent_runtime):
     assert result.exit_code == 0
     assert mock_agent_runtime["config"].agents.defaults.workspace == str(workspace_path)
     assert mock_agent_runtime["sync_templates"].call_args.args == (workspace_path,)
+    assert isinstance(
+        mock_agent_runtime["sync_templates"].call_args.kwargs["memory"],
+        LongShortTermMemory,
+    )
     assert (
         mock_agent_runtime["agent_loop_cls"].call_args.kwargs["workspace"]
         == workspace_path
@@ -290,6 +301,10 @@ def test_agent_workspace_override_wins_over_config_workspace(
     assert mock_agent_runtime["load_config"].call_args.args == (config_path.resolve(),)
     assert mock_agent_runtime["config"].agents.defaults.workspace == str(workspace_path)
     assert mock_agent_runtime["sync_templates"].call_args.args == (workspace_path,)
+    assert isinstance(
+        mock_agent_runtime["sync_templates"].call_args.kwargs["memory"],
+        LongShortTermMemory,
+    )
     assert (
         mock_agent_runtime["agent_loop_cls"].call_args.kwargs["workspace"]
         == workspace_path
@@ -314,7 +329,7 @@ def test_gateway_uses_workspace_from_config_by_default(
     monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
     monkeypatch.setattr(
         "nanobot.cli.commands.sync_workspace_templates",
-        lambda path: seen.__setitem__("workspace", path),
+        lambda path, memory: seen.update({"workspace": path, "memory": memory}),
     )
     monkeypatch.setattr(
         "nanobot.cli.commands._make_provider",
@@ -326,6 +341,7 @@ def test_gateway_uses_workspace_from_config_by_default(
     assert isinstance(result.exception, _StopGateway)
     assert seen["config_path"] == config_file.resolve()
     assert seen["workspace"] == Path(config.agents.defaults.workspace)
+    assert isinstance(seen["memory"], LongShortTermMemory)
 
 
 def test_gateway_workspace_option_overrides_config(monkeypatch, tmp_path: Path) -> None:
@@ -342,7 +358,7 @@ def test_gateway_workspace_option_overrides_config(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
     monkeypatch.setattr(
         "nanobot.cli.commands.sync_workspace_templates",
-        lambda path: seen.__setitem__("workspace", path),
+        lambda path, memory: seen.update({"workspace": path, "memory": memory}),
     )
     monkeypatch.setattr(
         "nanobot.cli.commands._make_provider",
@@ -356,6 +372,7 @@ def test_gateway_workspace_option_overrides_config(monkeypatch, tmp_path: Path) 
 
     assert isinstance(result.exception, _StopGateway)
     assert seen["workspace"] == override
+    assert isinstance(seen["memory"], LongShortTermMemory)
     assert config.workspace_path == override
 
 
@@ -376,7 +393,7 @@ def test_gateway_uses_config_directory_for_cron_store(
         "nanobot.config.paths.get_cron_dir", lambda: config_file.parent / "cron"
     )
     monkeypatch.setattr(
-        "nanobot.cli.commands.sync_workspace_templates", lambda _path: None
+        "nanobot.cli.commands.sync_workspace_templates", lambda _path, memory: None
     )
     monkeypatch.setattr("nanobot.cli.commands._make_provider", lambda _config: object())
     monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: object())
@@ -414,7 +431,8 @@ def test_gateway_passes_long_short_term_memory_into_agent_loop(
         "nanobot.config.paths.get_cron_dir", lambda: config_file.parent / "cron"
     )
     monkeypatch.setattr(
-        "nanobot.cli.commands.sync_workspace_templates", lambda _path: None
+        "nanobot.cli.commands.sync_workspace_templates",
+        lambda path, memory: seen.__setitem__("sync_memory", memory),
     )
     monkeypatch.setattr("nanobot.cli.commands._make_provider", lambda _config: object())
     monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: object())
@@ -436,3 +454,4 @@ def test_gateway_passes_long_short_term_memory_into_agent_loop(
     memory = seen["kwargs"]["memory"]
     assert isinstance(memory, LongShortTermMemory)
     assert memory.memory_dir == config.workspace_path / "memory"
+    assert seen["sync_memory"] is memory
