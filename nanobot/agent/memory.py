@@ -101,34 +101,34 @@ _SHORT_TERM_EXTRACT_RESPONSE_FORMAT = {
             "properties": {
                 "events": {
                     "type": "array",
-                    "description": "Distinct tasks or events extracted from the conversation.",
+                    "description": "Distinct tasks or events extracted from the conversation. Each event must be detailed enough to reconstruct what happened without reading the original conversation.",
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
                         "properties": {
                             "scene": {
                                 "type": "string",
-                                "description": "One-line label for this task or problem domain.",
+                                "description": "One-line label identifying the task domain and key subject, e.g. 'Fixing Python ImportError in nanobot after adding new module'.",
                             },
                             "what": {
                                 "type": "string",
-                                "description": "What was done or attempted.",
+                                "description": "Full description of what was done or attempted: list every significant action, command, file, or API call involved. Include intermediate steps and retries, not just the final action. Minimum 2-3 sentences.",
                             },
                             "who": {
                                 "type": "string",
-                                "description": "Who initiated or was involved.",
+                                "description": "Who initiated the request and who executed it. Include channel or context if available (e.g. 'User via Telegram chat; assistant executed using exec tool').",
                             },
                             "why": {
                                 "type": "string",
-                                "description": "The goal or motivation behind the task.",
+                                "description": "The underlying goal or motivation. Explain not just the immediate ask but the broader intent if inferable (e.g. 'User wanted to automate screenshots for monitoring; triggered by a need to verify UI state remotely').",
                             },
                             "how": {
                                 "type": "string",
-                                "description": "The approach or method used.",
+                                "description": "Detailed technical approach: exact tools, commands, file paths, APIs, libraries, or configuration used. Include any diagnostic steps, environment checks, or workarounds. Minimum 2-3 sentences.",
                             },
                             "result": {
                                 "type": "string",
-                                "description": "Outcome: explicitly state success or failure and the reason.",
+                                "description": "Outcome with full context: state success or failure explicitly, include error messages or output values when available, explain the root cause of any failure, and note what changed in the environment or files as a result.",
                             },
                         },
                         "required": ["scene", "what", "who", "why", "how", "result"],
@@ -563,10 +563,24 @@ class LongShortTermMemory:
         prompt = f"""Extract all distinct tasks and events from this conversation as structured 5W1H records.
 
 Rules:
-- One event covers one coherent task, request, or decision.
-- Fill every field concisely. For unknown values, write a brief inference.
-- result must explicitly state success or failure and the reason why.
+- One event = one coherent task, request, or decision. Split complex sessions into individual events.
+- Every field must be detailed and self-contained. A reader with no access to the original conversation must be able to fully understand what happened from the event alone.
+- what: cover every significant step, command, file touched, or API called — not just the final action.
+- how: include exact tools, commands, file paths, error messages, and workarounds used.
+- result: state success/failure explicitly; include exact error text if failed; note any file or environment changes.
+- Minimum length per field: 1 full sentence for scene/who/why, 2–3 sentences for what/how/result.
+- Do NOT write one-line summaries. Prefer specific details over generic labels.
 - Return JSON only.
+
+## Bad example (too vague — do NOT do this)
+```json
+{{"scene": "Screenshot attempt", "what": "Tried to take screenshot", "who": "User", "why": "Wanted a screenshot", "how": "Used screencapture", "result": "Failed"}}
+```
+
+## Good example (detailed — do this)
+```json
+{{"scene": "macOS full-screen screenshot via screencapture in SSH session", "what": "User requested a full-screen screenshot. Assistant first checked the DISPLAY, SSH_CLIENT, and SSH_TTY environment variables to diagnose display availability. On finding no display, assistant retried with `screencapture -x /tmp/shot.png` which succeeded and produced a 1.2 MB PNG file.", "who": "User initiated via Feishu chat; assistant executed using the exec tool.", "why": "User wanted to visually verify the current state of the desktop remotely without VNC access.", "how": "Used macOS `screencapture -x` command (suppress UI sounds, no display required) via the exec tool. Initial attempt with `screencapture /tmp/shot.png` failed with 'could not create image from display'. Retried with `-x` flag which bypassed the display requirement.", "result": "Success on second attempt. File saved at /Users/chenkaiming03/.nanobot/workspace/screenshot_full.png (1.2 MB PNG). Delivered to user as a Feishu attachment via the message tool."}}
+```
 
 ## Conversation
 {chr(10).join(lines)}"""
