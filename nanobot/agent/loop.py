@@ -599,7 +599,7 @@ class AgentLoop:
         session.updated_at = datetime.now()
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
-        """Delegate to MemoryStore.consolidate(). Returns True on success."""
+        """Delegate to the configured memory implementation. Returns True on success."""
         return await self.memory.consolidate(
             session,
             self.provider,

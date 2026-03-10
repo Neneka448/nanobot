@@ -8,6 +8,9 @@ class MemoryProtocol(Protocol):
     def get_memory_context(self) -> str:
         pass
 
+    def get_memory_locations(self, workspace_path: str) -> str:
+        pass
+
     async def consolidate(
         self,
         session: Session,

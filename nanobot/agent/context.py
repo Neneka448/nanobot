@@ -22,7 +22,7 @@ class ContextBuilder:
 
     def __init__(self, workspace: Path, memory: MemoryProtocol | None = None):
         self.workspace = workspace
-        self.memory = memory
+        self.memory = memory or MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -75,6 +75,8 @@ Skills with available="false" need dependencies installed first - you can try in
 - Use file tools when they are simpler or more reliable than shell commands.
 """
 
+        memory_locations = self.memory.get_memory_locations(workspace_path)
+
         return f"""# nanobot 🐈
 
 You are nanobot, a helpful AI assistant.
@@ -84,8 +86,7 @@ You are nanobot, a helpful AI assistant.
 
 ## Workspace
 Your workspace is at: {workspace_path}
-- Long-term memory: {workspace_path}/memory/MEMORY.md (write important facts here)
-- History log: {workspace_path}/memory/HISTORY.md (grep-searchable). Each entry starts with [YYYY-MM-DD HH:MM].
+{memory_locations}
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 {platform_policy}

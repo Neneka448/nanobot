@@ -8,6 +8,7 @@ from pathlib import Path
 import datetime as datetime_module
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.memory import LongShortTermMemory, MemoryStore
 
 
 class _FakeDatetime(real_datetime):
@@ -28,7 +29,9 @@ def test_bootstrap_files_are_backed_by_templates() -> None:
     template_dir = pkg_files("nanobot") / "templates"
 
     for filename in ContextBuilder.BOOTSTRAP_FILES:
-        assert (template_dir / filename).is_file(), f"missing bootstrap template: {filename}"
+        assert (
+            template_dir / filename
+        ).is_file(), f"missing bootstrap template: {filename}"
 
 
 def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) -> None:
@@ -45,6 +48,32 @@ def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) ->
     prompt2 = builder.build_system_prompt()
 
     assert prompt1 == prompt2
+
+
+def test_context_builder_defaults_to_memory_store(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+
+    assert isinstance(builder.memory, MemoryStore)
+
+    prompt = builder.build_system_prompt()
+    assert "MEMORY.md" in prompt
+    assert "LONG_TERM_MEMORY.md" not in prompt
+    assert "SHORT_TERM_MEMORY.md" not in prompt
+
+
+def test_context_builder_uses_long_short_term_memory_when_explicitly_provided(
+    tmp_path,
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    memory = LongShortTermMemory(workspace)
+    builder = ContextBuilder(workspace, memory=memory)
+
+    assert builder.memory is memory
+
+    prompt = builder.build_system_prompt()
+    assert "LONG_TERM_MEMORY.md" in prompt
+    assert "SHORT_TERM_MEMORY.md" in prompt
 
 
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:

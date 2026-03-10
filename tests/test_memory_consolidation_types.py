@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from nanobot.agent.loop import AgentLoop
 from nanobot.agent.memory import LongShortTermMemory, MemoryStore
+from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
 
@@ -39,6 +41,41 @@ def _make_long_short_term_session(contents: list[str]):
     ]
     session.last_consolidated = 0
     return session
+
+
+def test_agent_loop_defaults_to_memory_store(tmp_path: Path) -> None:
+    bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        memory_window=10,
+    )
+
+    assert isinstance(loop.memory, MemoryStore)
+
+
+def test_agent_loop_uses_explicit_long_short_term_memory(tmp_path: Path) -> None:
+    bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    memory = LongShortTermMemory(tmp_path)
+
+    loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        memory_window=10,
+        memory=memory,
+    )
+
+    assert loop.memory is memory
+    assert loop.context.memory is memory
 
 
 def _make_tool_response(history_entry, memory_update):

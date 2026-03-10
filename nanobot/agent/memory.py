@@ -115,6 +115,14 @@ class MemoryStore:
         long_term = self.read_long_term()
         return f"## Long-term Memory\n{long_term}" if long_term else ""
 
+    def get_memory_locations(self, workspace_path: str) -> str:
+        return (
+            f"- Long-term memory: {workspace_path}/memory/MEMORY.md "
+            "(write reusable knowledge here)\n"
+            f"- History log: {workspace_path}/memory/HISTORY.md "
+            "(grep-searchable legacy log). Each entry starts with [YYYY-MM-DD HH:MM]."
+        )
+
     async def consolidate(
         self,
         session: Session,
@@ -245,6 +253,16 @@ class LongShortTermMemory:
     def get_memory_context(self) -> str:
         long_term = self.read(self.long_term_memory_file)
         return f"## Long-term Memory\n{long_term}" if long_term else ""
+
+    def get_memory_locations(self, workspace_path: str) -> str:
+        return (
+            f"- Long-term memory: {workspace_path}/memory/LONG_TERM_MEMORY.md "
+            "(write strengthened reusable knowledge here)\n"
+            f"- Short-term memory: {workspace_path}/memory/SHORT_TERM_MEMORY.md "
+            "(store recent experiences before consolidation)\n"
+            f"- History log: {workspace_path}/memory/HISTORY.md "
+            "(grep-searchable legacy log). Each entry starts with [YYYY-MM-DD HH:MM]."
+        )
 
     def read(self, file: Path) -> str:
         if file.exists():
