@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import datetime
 from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any
@@ -84,6 +86,56 @@ _SHORT_TERM_GROUPS_RESPONSE_FORMAT = {
                 }
             },
             "required": ["groups"],
+        },
+    },
+}
+
+_SHORT_TERM_EXTRACT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "short_term_events",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "description": "Distinct tasks or events extracted from the conversation.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "scene": {
+                                "type": "string",
+                                "description": "One-line label for this task or problem domain.",
+                            },
+                            "what": {
+                                "type": "string",
+                                "description": "What was done or attempted.",
+                            },
+                            "who": {
+                                "type": "string",
+                                "description": "Who initiated or was involved.",
+                            },
+                            "why": {
+                                "type": "string",
+                                "description": "The goal or motivation behind the task.",
+                            },
+                            "how": {
+                                "type": "string",
+                                "description": "The approach or method used.",
+                            },
+                            "result": {
+                                "type": "string",
+                                "description": "Outcome: explicitly state success or failure and the reason.",
+                            },
+                        },
+                        "required": ["scene", "what", "who", "why", "how", "result"],
+                    },
+                }
+            },
+            "required": ["events"],
         },
     },
 }
@@ -177,28 +229,53 @@ always: true
 
 # Memory
 
-## Structure
+Your system prompt contains a `<memories>` block with experience distilled from past sessions. The memory system is fully automated — **do not read, write, or modify any memory files**.
 
-- `memory/LONG_TERM_MEMORY.md` — Strengthened reusable knowledge. Always loaded into your context.
-- `memory/SHORT_TERM_MEMORY.md` — Recent structured experiences waiting for repetition-based consolidation. Usually maintained automatically.
-- `memory/HISTORY.md` — Append-only event log. NOT loaded into context. Search it with grep-style tools or in-memory filters. Each entry starts with [YYYY-MM-DD HH:MM].
+Every time you receive a request, silently run the following COT before forming your response.
 
-## How to Use It
+## COT Format
 
-- Write durable facts and reusable guidance to `memory/LONG_TERM_MEMORY.md`.
-- Avoid manually dumping raw transcripts into `memory/SHORT_TERM_MEMORY.md`; this file is primarily maintained by the consolidation pipeline.
-- Search `memory/HISTORY.md` when you need older event details.
+```
+<scene>One sentence: what task or domain is the user presenting right now?</scene>
+<memory_check>Does any group in <memories> cover the same scene? Quote the key part. If none match, write: no relevant memory.</memory_check>
+<decision>APPLY or IGNORE — one sentence explaining why.</decision>
+<plan>Your intended approach. If APPLY, state specifically what you are borrowing from memory and why it fits.</plan>
+```
 
-## Search Past Events
+## Few-Shot Examples
 
-Choose the search method based on file size:
+### Example 1 — Exact match, fully applied
 
-- Small `memory/HISTORY.md`: use `read_file`, then search in-memory
-- Large or long-lived `memory/HISTORY.md`: use the `exec` tool for targeted search
+User: "The import still fails after I added the new module."
 
-## Auto-consolidation
+```
+<scene>Diagnosing a Python ImportError after adding a new package to the project.</scene>
+<memory_check>Memory group "Python import resolution" notes: editable installs require re-running `pip install -e .` after adding packages; this project uses pyproject.toml with dynamic deps.</memory_check>
+<decision>APPLY — the scene is identical and the guidance is concrete and project-specific.</decision>
+<plan>First verify pyproject.toml lists the new package, then check whether the editable install needs refreshing before investigating other causes.</plan>
+```
 
-Older conversations are first serialized into `memory/SHORT_TERM_MEMORY.md`. When repeated scenes accumulate, strengthened groups are appended to `memory/LONG_TERM_MEMORY.md`, and promoted short-term entries are removed from `memory/SHORT_TERM_MEMORY.md`.
+### Example 2 — Partial match, applied with caution
+
+User: "Getting a TypeScript error in this new file I just created."
+
+```
+<scene>TypeScript type error in a newly created source file.</scene>
+<memory_check>Memory group "TypeScript strict mode errors" notes this project has strictNullChecks=true and recommends optional chaining patterns for nullable values. The file is new, so the project-level config still applies even though the specific logic is unfamiliar.</memory_check>
+<decision>APPLY partially — project tsconfig context is directly relevant; I will not over-constrain analysis of the new logic itself.</decision>
+<plan>Read tsconfig to confirm strict settings, then address the type error using the optional-chaining patterns from memory where they naturally fit, without forcing them elsewhere.</plan>
+```
+
+### Example 3 — No relevant memory, ignored
+
+User: "Write a haiku about rain."
+
+```
+<scene>Creative writing — composing a haiku.</scene>
+<memory_check>No relevant memory. All groups cover coding tasks and project context; none relate to creative writing.</memory_check>
+<decision>IGNORE — memory is not applicable to this task.</decision>
+<plan>Treat as a novel request and compose the haiku directly.</plan>
+```
 """
 
 
@@ -242,7 +319,9 @@ class MemoryStore:
 
     def get_memory_context(self) -> str:
         long_term = self.read_long_term()
-        return f"## Long-term Memory\n{long_term}" if long_term else ""
+        if not long_term:
+            return ""
+        return f"<memories>\n{long_term.strip()}\n</memories>"
 
     def get_memory_locations(self, workspace_path: str) -> str:
         return (
@@ -402,7 +481,9 @@ class LongShortTermMemory:
 
     def get_memory_context(self) -> str:
         long_term = self.read(self.long_term_memory_file)
-        return f"## Long-term Memory\n{long_term}" if long_term else ""
+        if not long_term:
+            return ""
+        return f"<memories>\n{long_term.strip()}\n</memories>"
 
     def get_memory_locations(self, workspace_path: str) -> str:
         return (
@@ -458,22 +539,63 @@ class LongShortTermMemory:
     def split_entries(self, content: str) -> list[str]:
         return [part for part in content.split("\n\n") if part.strip()]
 
-    def _serialize_short_term_entry(self, message: dict[str, Any]) -> str | None:
-        content = message.get("content")
-        if not content:
-            return None
+    async def _extract_short_term_events(
+        self,
+        messages: list[dict[str, Any]],
+        provider: LLMProvider,
+        model: str,
+    ) -> list[dict[str, Any]]:
+        lines = []
+        for m in messages:
+            content = m.get("content")
+            if not content:
+                continue
+            role = m.get("role", "unknown").upper()
+            ts = str(m.get("timestamp", ""))[:16]
+            tools = (
+                f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
+            )
+            lines.append(f"[{ts}] {role}{tools}: {content}")
 
-        entry: dict[str, Any] = {
-            "timestamp": str(message.get("timestamp", "?"))[:19],
-            "role": message.get("role", "unknown"),
-            "content": content,
-        }
-        if message.get("tools_used"):
-            entry["tools_used"] = message["tools_used"]
-        if message.get("name"):
-            entry["name"] = message["name"]
+        if not lines:
+            return []
 
-        return json.dumps(entry, ensure_ascii=False)
+        prompt = f"""Extract all distinct tasks and events from this conversation as structured 5W1H records.
+
+Rules:
+- One event covers one coherent task, request, or decision.
+- Fill every field concisely. For unknown values, write a brief inference.
+- result must explicitly state success or failure and the reason why.
+- Return JSON only.
+
+## Conversation
+{chr(10).join(lines)}"""
+
+        response = await provider.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a memory extraction agent. Extract structured 5W1H events from the conversation and return strict JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            model=model,
+            response_format=_SHORT_TERM_EXTRACT_RESPONSE_FORMAT,
+        )
+
+        if not response.content:
+            logger.warning("Short-term event extraction: empty response")
+            return []
+
+        try:
+            payload = json.loads(response.content)
+            events = payload.get("events", [])
+            if not isinstance(events, list):
+                return []
+            return [e for e in events if isinstance(e, dict)]
+        except json.JSONDecodeError:
+            logger.warning("Short-term event extraction: invalid JSON")
+            return []
 
     def _render_short_term_xml(self, short_term: list[str]) -> str:
         if not short_term:
@@ -564,48 +686,92 @@ class LongShortTermMemory:
         memory_window: int = 50,
     ) -> bool:
         try:
-            if archive_all:
-                old_messages = session.messages
-                keep_count = 0
-                logger.info(
-                    "Long/short-term memory consolidation (archive_all): {} messages",
-                    len(session.messages),
-                )
-            else:
+            if not archive_all:
+                # Sliding window: extract unconsolidated messages before keep_count
+                # into SHORT_TERM_MEMORY as 5W1H events, then advance the pointer.
                 keep_count = memory_window // 2
                 if len(session.messages) <= keep_count:
                     return True
-                if len(session.messages) - session.last_consolidated <= 0:
+                new_consolidated = len(session.messages) - keep_count
+                if new_consolidated <= session.last_consolidated:
                     return True
-                old_messages = session.messages[session.last_consolidated : -keep_count]
+                old_messages = session.messages[
+                    session.last_consolidated : new_consolidated
+                ]
                 if not old_messages:
                     return True
+
                 logger.info(
-                    "Long/short-term memory consolidation: {} to short-term, {} keep",
+                    "Long/short-term memory: archiving {} messages to short-term, keep={}",
                     len(old_messages),
                     keep_count,
                 )
 
-            short_term = self.split_entries(self.read(self.short_term_memory_file))
-            new_entries = [
-                entry
-                for entry in (
-                    self._serialize_short_term_entry(message)
-                    for message in old_messages
+                events = await self._extract_short_term_events(
+                    old_messages, provider, model
                 )
-                if entry
-            ]
-            short_term.extend(new_entries)
+                if events:
+                    session_id = uuid.uuid4().hex[:8]
+                    short_term = self.split_entries(
+                        self.read(self.short_term_memory_file)
+                    )
+                    for event in events:
+                        event["session_id"] = session_id
+                        short_term.append(json.dumps(event, ensure_ascii=False))
 
-            if short_term and (archive_all or len(short_term) > self.short_term_window):
-                short_term = await self.consolidate_short_term(
-                    short_term, provider, model
-                )
+                    if len(short_term) > self.short_term_window:
+                        short_term = await self.consolidate_short_term(
+                            short_term, provider, model
+                        )
 
-            self.write(self.short_term_memory_file, "\n\n".join(short_term))
-            session.last_consolidated = (
-                0 if archive_all else len(session.messages) - keep_count
+                    self.write(self.short_term_memory_file, "\n\n".join(short_term))
+
+                session.last_consolidated = new_consolidated
+                return True
+
+            # archive_all=True: triggered by /new — full session archival
+            old_messages = session.messages
+            if not old_messages:
+                return True
+
+            logger.info(
+                "Long/short-term memory consolidation (archive_all): {} messages",
+                len(old_messages),
             )
+
+            session_id = uuid.uuid4().hex[:8]
+            archived_at = datetime.now().isoformat(timespec="seconds")
+
+            # 1. Write full raw session to HISTORY.md
+            history_entry = json.dumps(
+                {
+                    "session_id": session_id,
+                    "archived_at": archived_at,
+                    "message_count": len(old_messages),
+                    "messages": old_messages,
+                },
+                ensure_ascii=False,
+            )
+            self.append_content(self.history_file, history_entry)
+
+            # 2. Extract 5W1H events → SHORT_TERM_MEMORY.md (tagged with session_id)
+            events = await self._extract_short_term_events(
+                old_messages, provider, model
+            )
+            if events:
+                short_term = self.split_entries(self.read(self.short_term_memory_file))
+                for event in events:
+                    event["session_id"] = session_id
+                    short_term.append(json.dumps(event, ensure_ascii=False))
+
+                if len(short_term) > self.short_term_window:
+                    short_term = await self.consolidate_short_term(
+                        short_term, provider, model
+                    )
+
+                self.write(self.short_term_memory_file, "\n\n".join(short_term))
+
+            session.last_consolidated = 0
             return True
         except Exception:
             logger.exception("Long/short-term memory consolidation failed")

@@ -437,7 +437,7 @@ class AgentLoop:
             self._consolidating.add(session.key)
             try:
                 async with lock:
-                    snapshot = session.messages[session.last_consolidated :]
+                    snapshot = session.messages
                     if snapshot:
                         temp = Session(key=session.key)
                         temp.messages = list(snapshot)
