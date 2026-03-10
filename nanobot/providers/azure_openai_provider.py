@@ -17,7 +17,7 @@ _AZURE_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "n
 class AzureOpenAIProvider(LLMProvider):
     """
     Azure OpenAI provider with API version 2024-10-21 compliance.
-    
+
     Features:
     - Hardcoded API version 2024-10-21
     - Uses model field as Azure deployment name in URL path
@@ -35,16 +35,16 @@ class AzureOpenAIProvider(LLMProvider):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.api_version = "2024-10-21"
-        
+
         # Validate required parameters
         if not api_key:
             raise ValueError("Azure OpenAI api_key is required")
         if not api_base:
             raise ValueError("Azure OpenAI api_base is required")
-        
+
         # Ensure api_base ends with /
-        if not api_base.endswith('/'):
-            api_base += '/'
+        if not api_base.endswith("/"):
+            api_base += "/"
         self.api_base = api_base
 
     def _build_chat_url(self, deployment_name: str) -> str:
@@ -52,12 +52,11 @@ class AzureOpenAIProvider(LLMProvider):
         # Azure OpenAI URL format:
         # https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version={version}
         base_url = self.api_base
-        if not base_url.endswith('/'):
-            base_url += '/'
-        
+        if not base_url.endswith("/"):
+            base_url += "/"
+
         url = urljoin(
-            base_url, 
-            f"openai/deployments/{deployment_name}/chat/completions"
+            base_url, f"openai/deployments/{deployment_name}/chat/completions"
         )
         return f"{url}?api-version={self.api_version}"
 
@@ -88,6 +87,7 @@ class AzureOpenAIProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Prepare the request payload with Azure OpenAI 2024-10-21 compliance."""
         payload: dict[str, Any] = {
@@ -95,7 +95,9 @@ class AzureOpenAIProvider(LLMProvider):
                 self._sanitize_empty_content(messages),
                 _AZURE_MSG_KEYS,
             ),
-            "max_completion_tokens": max(1, max_tokens),  # Azure API 2024-10-21 uses max_completion_tokens
+            "max_completion_tokens": max(
+                1, max_tokens
+            ),  # Azure API 2024-10-21 uses max_completion_tokens
         }
 
         if self._supports_temperature(deployment_name, reasoning_effort):
@@ -103,6 +105,9 @@ class AzureOpenAIProvider(LLMProvider):
 
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
+
+        if response_format:
+            payload["response_format"] = response_format
 
         if tools:
             payload["tools"] = tools
@@ -118,6 +123,7 @@ class AzureOpenAIProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request to Azure OpenAI.
@@ -137,7 +143,13 @@ class AzureOpenAIProvider(LLMProvider):
         url = self._build_chat_url(deployment_name)
         headers = self._build_headers()
         payload = self._prepare_request_payload(
-            deployment_name, messages, tools, max_tokens, temperature, reasoning_effort
+            deployment_name,
+            messages,
+            tools,
+            max_tokens,
+            temperature,
+            reasoning_effort,
+            response_format,
         )
 
         try:
@@ -148,7 +160,7 @@ class AzureOpenAIProvider(LLMProvider):
                         content=f"Azure OpenAI API Error {response.status_code}: {response.text}",
                         finish_reason="error",
                     )
-                
+
                 response_data = response.json()
                 return self._parse_response(response_data)
 

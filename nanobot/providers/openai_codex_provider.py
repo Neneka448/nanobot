@@ -32,6 +32,7 @@ class OpenAICodexProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
         model = model or self.default_model
         system_prompt, input_items = _convert_messages(messages)
@@ -55,6 +56,9 @@ class OpenAICodexProvider(LLMProvider):
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort}
 
+        if response_format:
+            body["text"]["format"] = _convert_response_format(response_format)
+
         if tools:
             body["tools"] = _convert_tools(tools)
 
@@ -62,12 +66,18 @@ class OpenAICodexProvider(LLMProvider):
 
         try:
             try:
-                content, tool_calls, finish_reason = await _request_codex(url, headers, body, verify=True)
+                content, tool_calls, finish_reason = await _request_codex(
+                    url, headers, body, verify=True
+                )
             except Exception as e:
                 if "CERTIFICATE_VERIFY_FAILED" not in str(e):
                     raise
-                logger.warning("SSL certificate verification failed for Codex API; retrying with verify=False")
-                content, tool_calls, finish_reason = await _request_codex(url, headers, body, verify=False)
+                logger.warning(
+                    "SSL certificate verification failed for Codex API; retrying with verify=False"
+                )
+                content, tool_calls, finish_reason = await _request_codex(
+                    url, headers, body, verify=False
+                )
             return LLMResponse(
                 content=content,
                 tool_calls=tool_calls,
@@ -111,7 +121,11 @@ async def _request_codex(
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 text = await response.aread()
-                raise RuntimeError(_friendly_error(response.status_code, text.decode("utf-8", "ignore")))
+                raise RuntimeError(
+                    _friendly_error(
+                        response.status_code, text.decode("utf-8", "ignore")
+                    )
+                )
             return await _consume_sse(response)
 
 
@@ -124,16 +138,32 @@ def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not name:
             continue
         params = fn.get("parameters") or {}
-        converted.append({
-            "type": "function",
-            "name": name,
-            "description": fn.get("description") or "",
-            "parameters": params if isinstance(params, dict) else {},
-        })
+        converted.append(
+            {
+                "type": "function",
+                "name": name,
+                "description": fn.get("description") or "",
+                "parameters": params if isinstance(params, dict) else {},
+            }
+        )
     return converted
 
 
-def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+def _convert_response_format(response_format: dict[str, Any]) -> dict[str, Any]:
+    if response_format.get("type") == "json_schema":
+        json_schema = response_format.get("json_schema") or {}
+        return {
+            "type": "json_schema",
+            "name": json_schema.get("name", "structured_output"),
+            "schema": json_schema.get("schema", {}),
+            "strict": json_schema.get("strict", True),
+        }
+    return response_format
+
+
+def _convert_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
     system_prompt = ""
     input_items: list[dict[str, Any]] = []
 
@@ -180,7 +210,11 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[st
 
         if role == "tool":
             call_id, _ = _split_tool_call_id(msg.get("tool_call_id"))
-            output_text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+            output_text = (
+                content
+                if isinstance(content, str)
+                else json.dumps(content, ensure_ascii=False)
+            )
             input_items.append(
                 {
                     "type": "function_call_output",
@@ -206,7 +240,9 @@ def _convert_user_message(content: Any) -> dict[str, Any]:
             elif item.get("type") == "image_url":
                 url = (item.get("image_url") or {}).get("url")
                 if url:
-                    converted.append({"type": "input_image", "image_url": url, "detail": "auto"})
+                    converted.append(
+                        {"type": "input_image", "image_url": url, "detail": "auto"}
+                    )
         if converted:
             return {"role": "user", "content": converted}
     return {"role": "user", "content": [{"type": "input_text", "text": ""}]}
@@ -246,7 +282,9 @@ async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], 
         buffer.append(line)
 
 
-async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequest], str]:
+async def _consume_sse(
+    response: httpx.Response,
+) -> tuple[str, list[ToolCallRequest], str]:
     content = ""
     tool_calls: list[ToolCallRequest] = []
     tool_call_buffers: dict[str, dict[str, Any]] = {}
@@ -303,7 +341,12 @@ async def _consume_sse(response: httpx.Response) -> tuple[str, list[ToolCallRequ
     return content, tool_calls, finish_reason
 
 
-_FINISH_REASON_MAP = {"completed": "stop", "incomplete": "length", "failed": "error", "cancelled": "error"}
+_FINISH_REASON_MAP = {
+    "completed": "stop",
+    "incomplete": "length",
+    "failed": "error",
+    "cancelled": "error",
+}
 
 
 def _map_finish_reason(status: str | None) -> str:
