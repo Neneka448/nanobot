@@ -24,6 +24,7 @@ from nanobot.agent.tools.filesystem import (
 )
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.session_stats import SessionStatsTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
@@ -145,6 +146,7 @@ class AgentLoop:
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
+        self.tools.register(SessionStatsTool(session_manager=self.sessions))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
@@ -177,7 +179,7 @@ class AgentLoop:
         self, channel: str, chat_id: str, message_id: str | None = None
     ) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron"):
+        for name in ("message", "spawn", "cron", "session_stats"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(
@@ -208,16 +210,42 @@ class AgentLoop:
 
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    @staticmethod
+    def _estimate_response_tokens(messages: list[dict], response: Any) -> int:
+        """Prefer provider usage; fall back to a simple char-based estimate."""
+        usage = getattr(response, "usage", None) or {}
+        total = usage.get("total_tokens") if isinstance(usage, dict) else None
+        if isinstance(total, int) and total > 0:
+            return total
+
+        payload = {
+            "messages": messages,
+            "content": response.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                }
+                for tc in (response.tool_calls or [])
+            ],
+            "reasoning_content": response.reasoning_content,
+            "thinking_blocks": response.thinking_blocks,
+        }
+        char_count = len(json.dumps(payload, ensure_ascii=False))
+        return max(1, (char_count + 3) // 4)
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
-    ) -> tuple[str | None, list[str], list[dict]]:
-        """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
+    ) -> tuple[str | None, list[str], list[dict], int]:
+        """Run the agent iteration loop. Returns (final_content, tools_used, messages, total_tokens)."""
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        total_tokens = 0
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -230,6 +258,7 @@ class AgentLoop:
                 max_tokens=self.max_tokens,
                 reasoning_effort=self.reasoning_effort,
             )
+            total_tokens += self._estimate_response_tokens(messages, response)
 
             if response.has_tool_calls:
                 if on_progress:
@@ -295,7 +324,7 @@ class AgentLoop:
                 "without completing the task. You can try breaking the task into smaller steps."
             )
 
-        return final_content, tools_used, messages
+        return final_content, tools_used, messages, total_tokens
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -406,6 +435,9 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            if session_tool := self.tools.get("session_stats"):
+                if hasattr(session_tool, "set_session_key"):
+                    session_tool.set_session_key(key)
             history = session.get_history(max_messages=self.memory_window)
             messages = self.context.build_messages(
                 history=history,
@@ -413,7 +445,12 @@ class AgentLoop:
                 channel=channel,
                 chat_id=chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            final_content, _, all_msgs, turn_total_tokens = await self._run_agent_loop(
+                messages
+            )
+            session.metadata["total_tokens"] = (
+                int(session.metadata.get("total_tokens", 0) or 0) + turn_total_tokens
+            )
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             return OutboundMessage(
@@ -429,6 +466,9 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+        if session_tool := self.tools.get("session_stats"):
+            if hasattr(session_tool, "set_session_key"):
+                session_tool.set_session_key(key)
 
         # Slash commands
         cmd = msg.content.strip().lower()
@@ -437,7 +477,7 @@ class AgentLoop:
             self._consolidating.add(session.key)
             try:
                 async with lock:
-                    snapshot = session.messages
+                    snapshot = session.messages[session.last_consolidated :]
                     if snapshot:
                         temp = Session(key=session.key)
                         temp.messages = list(snapshot)
@@ -458,6 +498,7 @@ class AgentLoop:
                 self._consolidating.discard(session.key)
 
             session.clear()
+            session.metadata.pop("total_tokens", None)
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             return OutboundMessage(
@@ -518,7 +559,7 @@ class AgentLoop:
                 )
             )
 
-        final_content, _, all_msgs = await self._run_agent_loop(
+        final_content, _, all_msgs, turn_total_tokens = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_progress,
         )
@@ -526,6 +567,9 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
+        session.metadata["total_tokens"] = (
+            int(session.metadata.get("total_tokens", 0) or 0) + turn_total_tokens
+        )
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
 
